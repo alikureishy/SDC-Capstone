@@ -54,7 +54,7 @@ class WaypointUpdater(object):
             self.waypoints_2d = None
             self.waypoints_tree = None
 
-            rospy.spin()
+            self.loop()
 
     def loop(self):
         '''
