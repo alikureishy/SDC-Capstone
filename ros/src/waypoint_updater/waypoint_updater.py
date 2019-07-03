@@ -24,10 +24,10 @@ as well as to verify your TL classifier.
 TODO (for Yousuf and Aaron): Stopline location for each traffic light.
 '''
 
+from waypoints_wrapper import WaypointsWrapper
+
 LOOKAHEAD_WPS = 200 # Number of waypoints we will publish. You can change this number
 UPDATER_FREQUENCY = 50 # Hertz
-KDTREE_SEARCH_COUNT = 1
-KDTREE_SEARCH_RESULT_IDX = 1 # The KDTree query returns (position, index) tuple. We only need the index value here..hence '1'.
 
 class WaypointUpdater(object):
     def __init__(self):
@@ -50,9 +50,9 @@ class WaypointUpdater(object):
 
             # TODO: Add other member variables you need below
             self.base_waypoints = None
+            self.base_waypoints_wrapper = None
             self.pose = None
-            self.waypoints_2d = None
-            self.waypoints_tree = None
+            self.pose_xy = None
 
             self.loop()
 
@@ -71,46 +71,12 @@ class WaypointUpdater(object):
         while not rospy.is_shutdown():
             # Get closest waypoint
             with self.lock:
-                if self.pose and self.base_waypoints:
-                    closest_waypoint_idx = self.get_closest_waypoint_idx()
-                    self.publish_waypoints(closest_waypoint_idx)
+                if self.pose_xy and self.base_waypoints:
+                    closest_waypoint_idx, _ = self.base_waypoints_wrapper.get_closest_waypoint_to(self.pose_xy, strictly_ahead=True)
+                    self.publish_updated_waypoints(closest_waypoint_idx)
             rate.sleep()
 
-    def get_closest_waypoint_idx(self):
-        '''
-        Find the closest waypoint that is ahead of the vehicle
-        :return: id of the closest waypoint in the base_waypoints list
-        '''
-
-        with self.lock:
-            x = self.pose.pose.position.x
-            y = self.pose.pose.position.y
-
-            # Look for the closest in the KD Tree...
-            closest_idx = self.waypoints_tree.query([x, y], KDTREE_SEARCH_COUNT)[KDTREE_SEARCH_RESULT_IDX]
-
-            # Check if this waypoint is ahead or behind the vehicle, based on the motion vector of the vehicle
-            # We use coordinates here that are relative to the absolute origin (just as all waypoints are).
-            # We then utilize their coordinates as vectors, and perform the desired calculation
-            pose_x_y_vector = np.array([x,y])
-            closest_x_y_vector = np.array(self.waypoints_2d[closest_idx])
-            prev_x_y_vector = np.array(self.waypoints_2d[closest_idx-1]) # This is guaranteed to be behind the vehicle. If it wasn't, it would have been returned as the closest waypoint.
-
-            # With hyperplane perpendicular to the closest vector position, we define the following:
-            previous_to_hyperplane = closest_x_y_vector - prev_x_y_vector # Vector pointing from prev --> hyperplane
-            hyperplane_to_car = pose_x_y_vector - closest_x_y_vector # Vector pointing from hyperplane --> car
-
-            # If the two vectors above are pointing in teh same direction, it means the car is ahead of the closest index
-            # and the dot product will be positive (as below), in which case we pick the next waypoint (which is
-            # guaranteed then to be AHEAD)
-            product = np.dot(previous_to_hyperplane, hyperplane_to_car)
-            if product > 0:
-                closest_idx = (closest_idx + 1) % len(self.waypoints_2d)
-            else: # when product <= 0, the closest waypoint is ahead of the car (or at the same position)
-                pass # So we can return the closest idx as it is
-            return closest_idx
-
-    def publish_waypoints(self, closest_waypoint_idx):
+    def publish_updated_waypoints(self, closest_waypoint_idx):
         with self.lock:
             lane = Lane()
             lane.header = self.base_waypoints.header
@@ -123,8 +89,11 @@ class WaypointUpdater(object):
         # TODO: Implement
         with self.lock:
             self.pose = msg
+            x = msg.pose.position.x
+            y = msg.pose.position.y
+            self.pose_xy = [x,y]
 
-    def waypoints_cb(self, waypoints):
+    def waypoints_cb(self, msg):
         '''
         This will be called only once, because the /base_waypoints subscriber is a "latched"
         subscriber.
@@ -133,19 +102,15 @@ class WaypointUpdater(object):
         '''
         # TODO: Implement
         with self.lock:
-            self.base_waypoints = waypoints
-            if self.waypoints_2d is None:
-                self.waypoints_2d = [[waypoint.pose.pose.position.x, waypoint.pose.pose.position.y] for waypoint in waypoints.waypoints]
-                self.waypoints_tree = KDTree(self.waypoints_2d)
+            self.base_waypoints = msg
+            self.base_waypoints = WaypointsWrapper(msg.waypoints)
 
     def traffic_cb(self, msg):
         # TODO: Callback for /traffic_waypoint message. Implement
-
         pass
 
     def obstacle_cb(self, msg):
         # TODO: Callback for /obstacle_waypoint message. We will implement it later
-
         pass
 
     def get_waypoint_velocity(self, waypoint):

@@ -9,25 +9,25 @@ KDTREE_SEARCH_RESULT_IDX = 1 # The KDTree query returns (position, index) tuple.
 
 class WaypointsWrapper(object):
     def __init__ (self, waypoints_list):
-        '''
+        """
         Initializes a waypoints wrapper object
         :param waypoints_list: list [] of waypoints (of type Waypoint.msg)
-        '''
+        """
         self.waypoints_list = waypoints_list
         self.waypoints_coordinates = [[waypoint.pose.pose.position.x, waypoint.pose.pose.position.y] for waypoint in waypoints_list]
         self.waypoints_tree = KDTree(self.waypoints_coordinates)
 
-    def get_closest_waypoint(self, (x, y), only_ahead = True):
-        '''
+    def get_closest_waypoint_to(self, (x, y), strictly_ahead = True):
+        """
         :param (x,y): Coordinates of point being checked for closeness
         :return: index of closest waypoint, and the waypoint itself
-        '''
+        """
 
         # Look for the closest in the KD Tree...
         closest_idx = self.waypoints_tree.query([x, y], KDTREE_SEARCH_COUNT)[KDTREE_SEARCH_RESULT_IDX]
         closest_waypoint = self.waypoints_list[closest_idx]
 
-        if only_ahead:
+        if strictly_ahead:
             # Check if this waypoint is ahead or behind the vehicle, based on the motion vector of the vehicle
             # We use coordinates here that are relative to the absolute origin (just as all waypoints are).
             # We then utilize their coordinates as vectors, and perform the desired calculation
