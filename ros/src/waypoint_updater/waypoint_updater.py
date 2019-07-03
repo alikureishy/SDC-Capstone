@@ -28,6 +28,7 @@ from waypoints_wrapper import WaypointsWrapper
 
 LOOKAHEAD_WPS = 200 # Number of waypoints we will publish. You can change this number
 UPDATER_FREQUENCY = 50 # Hertz
+MAX_DECEL = 0.5 # Deceleration dampener
 
 class WaypointUpdater(object):
     def __init__(self):
@@ -41,18 +42,21 @@ class WaypointUpdater(object):
 
             rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
             rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
-
-            # TODO: Add a subscriber for /traffic_waypoint and /obstacle_waypoint below
             rospy.Subscriber('/traffic_waypoint', Lane, self.traffic_cb)
+
+            # For future enhancements:
             rospy.Subscriber('/obstacle_waypoint', Lane, self.obstacle_cb)
 
             self.final_waypoints_pub = rospy.Publisher('final_waypoints', Lane, queue_size=1)
 
             # TODO: Add other member variables you need below
-            self.base_waypoints = None
-            self.base_waypoints_wrapper = None
+            self.skeletal_waypoints = None
+            self.skeletal_waypoints_wrapper = None
             self.pose = None
             self.pose_xy = None
+
+            # Traffic-related:
+            self.upcoming_stopline_wp_idx = -1
 
             self.loop()
 
@@ -71,18 +75,34 @@ class WaypointUpdater(object):
         while not rospy.is_shutdown():
             # Get closest waypoint
             with self.lock:
-                if self.pose_xy and self.base_waypoints:
-                    closest_waypoint_idx, _ = self.base_waypoints_wrapper.get_closest_waypoint_to(self.pose_xy, strictly_ahead=True)
+                if self.pose_xy and self.skeletal_waypoints:
+                    closest_waypoint_idx, _ = self.skeletal_waypoints_wrapper.get_closest_waypoint_to(self.pose_xy, strictly_ahead=True)
                     self.publish_updated_waypoints(closest_waypoint_idx)
             rate.sleep()
 
     def publish_updated_waypoints(self, closest_waypoint_idx):
         with self.lock:
+            final_lane = self.generate_lane()
+            self.final_waypoints_pub.publish(final_lane)
+
+    def generate_lane(self):
+        with self.lock:
             lane = Lane()
-            lane.header = self.base_waypoints.header
+            lane.header = self.skeletal_waypoints.header
+
+            closest_wp_idx, _ = self.skeletal_waypoints_wrapper.get_closest_waypoint_to(self.pose_xy)
+            farthest_wp_idx = closest_wp_idx + LOOKAHEAD_WPS
 
             # Only slice out the waypoints needed (If the final index spills over, python adjusts to the end index)
-            lane.waypoints = self.base_waypoints.waypoints[closest_waypoint_idx: closest_waypoint_idx + LOOKAHEAD_WPS]
+            skeletal_lane_waypoints = self.skeletal_waypoints[closest_wp_idx:farthest_wp_idx]
+
+            if self.upcoming_stopline_wp_idx == -1 or self.upcoming_stopline_wp_idx >= farthest_wp_idx:
+                # ~There's no traffic light coming up for the next LOOKAHEAD_WPS waypoints, so continue as-is
+                lane.waypoints = skeletal_lane_waypoints
+            else:
+                # ~There's a traffic light coming up soon. We need to start decelerating appropriately
+                lane.waypoints = WaypointUpdater.decelerate_waypoints(closest_wp_idx, skeletal_lane_waypoints, self.upcoming_stopline_wp_idx)
+
             self.final_waypoints_pub.publish(lane)
 
     def pose_cb(self, msg):
@@ -102,21 +122,66 @@ class WaypointUpdater(object):
         '''
         # TODO: Implement
         with self.lock:
-            self.base_waypoints = msg
-            self.base_waypoints = WaypointsWrapper(msg.waypoints)
+            self.skeletal_waypoints = msg
+            self.skeletal_waypoints_wrapper = WaypointsWrapper(msg.waypoints)
 
     def traffic_cb(self, msg):
         # TODO: Callback for /traffic_waypoint message. Implement
-        pass
+        with self.lock:
+            self.upcoming_stopline_wp_idx = msg.data
 
     def obstacle_cb(self, msg):
         # TODO: Callback for /obstacle_waypoint message. We will implement it later
         pass
 
-    def get_waypoint_velocity(self, waypoint):
+    @staticmethod
+    def decelerate_waypoints(closest_wp_idx, remaining_skeletal_waypoints, upcoming_stopline_wp_idx):
+        """
+        This function generates a list of waypoints from the skeletal waypoints that are ahead of us (i.e, the
+        subsequent_waypoints parameter). Each waypoint from that list gets copied over to the new list, after
+        setting/adjusting to the requisite velocity at that waypoint (to achieve the required deceleration)
+        :param closest_wp_idx:
+        :param remaining_skeletal_waypoints:
+        :return:
+        """
+        decelerated_waypoints = []
+        # Stop 2 waypoints before the stopline so that the front of the car stops at the stopline:
+        required_stop_idx = max((upcoming_stopline_wp_idx - closest_wp_idx - 2), 0)
+
+        for i, skeletal_waypoint in enumerate(remaining_skeletal_waypoints):
+            updated_waypoint = Waypoint()
+            updated_waypoint.pose = skeletal_waypoint.pose    # Deceleration isn't going to change the pose (which includes the orientation)
+
+            # Check the physical distance between i-th waypoint and stop_idx
+            dist = WaypointUpdater.distance(remaining_skeletal_waypoints, i, required_stop_idx)
+
+            # This exponentially declines the vel as we get nearer to the stop_idx
+            requisite_velocity = math.sqrt(2 * MAX_DECEL * dist)    # <---- We can use any appropriate function here
+
+            # Since we might never really get to a distance of 0, the requisite_velocity will always likely be some
+            # non zero real number. However, we do need to come to a commplete stop at the end, so this check here
+            # ensures that the car doesn't keep inching forward when it has almost already reached the stopline
+            if requisite_velocity < 1.:
+                requisite_velocity = 0.
+
+            # We assume that all base waypoints will be set at the speed limit (and we adjust that downwards, only as needed)
+            # Here, if the velocity calculated above ends up being larger than the speed limit (i.e, the previous linear
+            # velocity -- wp.twist.twist.linear.x -- we just retain our velocity at that that previous linear velocity
+            # As the calculated vel above declines (as the i-th waypoint gets closer to the stop-idx, the velocity will
+            # drop below the speed limit, which is what will make the car start slowing down. In other words, we assume
+            # that the car will always travel at the speed limit, unless there's a reason to reduce the speed (as with
+            # an approaching traffic light, in this case). [Another example would be when approaching an obstacle]
+            updated_waypoint.twist.twist.linear.x = min(requisite_velocity, skeletal_waypoint.twist.twist.linear.x)
+            decelerated_waypoints.append(updated_waypoint)
+
+        return decelerated_waypoints
+
+    @staticmethod
+    def get_waypoint_velocity(waypoint):
         return waypoint.twist.twist.linear.x
 
-    def set_waypoint_velocity(self, waypoints, waypoint, velocity):
+    @staticmethod
+    def set_waypoint_velocity(waypoints, waypoint, velocity):
         waypoints[waypoint].twist.twist.linear.x = velocity
 
     @staticmethod

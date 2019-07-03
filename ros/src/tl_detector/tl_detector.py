@@ -20,8 +20,8 @@ class TLDetector(object):
         rospy.init_node('tl_detector')
 
         self.pose = None
-        self.waypoints = None
-        self.waypoints_wrapper = None
+        self.skeletal_waypoints = None
+        self.skeletal_waypoints_wrapper = None
         self.camera_image = None
         self.lights = []
 
@@ -47,20 +47,21 @@ class TLDetector(object):
         self.light_classifier = TLClassifier()
         self.listener = tf.TransformListener()
 
-        self.state = TrafficLight.UNKNOWN
-        self.last_state = TrafficLight.UNKNOWN
-        self.last_redlight_wp = -1
-        self.state_count = 0
+        self.perceived_light_color = TrafficLight.UNKNOWN
+        self.upcoming_red_light_wp = -1
+        self.perceived_light_stablity_counter = 0
 
         rospy.spin()
 
     def pose_cb(self, msg):
         self.pose = msg
 
+    # Called only once since the subscription is a latched subscription
     def waypoints_cb(self, msg):
-        self.waypoints = msg
-        self.waypoints_wrapper = WaypointsWrapper(msg.waypoints)
+        self.skeletal_waypoints = msg
+        self.skeletal_waypoints_wrapper = WaypointsWrapper(msg.waypoints)
 
+    # Called only once since the subscription is a latched subscription
     def traffic_cb(self, msg):
         self.lights = msg.lights
 
@@ -82,19 +83,18 @@ class TLDetector(object):
         of times till we start using it. Otherwise the previous stable state is
         used.
         '''
-        if self.state != state:
+        if self.perceived_light_color != state:
             # ~If it's a new state:
-            self.state_count = 0
-            self.state = state
-        elif self.state_count >= STATE_COUNT_THRESHOLD:
+            self.perceived_light_stablity_counter = 0
+            self.perceived_light_color = state
+        elif self.perceived_light_stablity_counter >= STATE_COUNT_THRESHOLD:
             # ~If it's the same state but the state has 'stabilized':
-            self.last_state = self.state
-            self.last_redlight_wp = light_wp if state == TrafficLight.RED else -1
-            self.upcoming_red_light_pub.publish(Int32(self.last_redlight_wp))
+            self.upcoming_red_light_wp = light_wp if state == TrafficLight.RED else -1
+            self.upcoming_red_light_pub.publish(Int32(self.upcoming_red_light_wp))
         else:
             #~If it's the same state but the state has not stabilized yet, we republish the old red-light waypoint (if any)
-            self.upcoming_red_light_pub.publish(Int32(self.last_redlight_wp))
-        self.state_count += 1
+            self.upcoming_red_light_pub.publish(Int32(self.upcoming_red_light_wp))
+        self.perceived_light_stablity_counter += 1
 
     def get_light_state(self, light):
         """Determines the current color of the traffic light
@@ -126,19 +126,19 @@ class TLDetector(object):
         # List of positions that correspond to the line to stop in front of, for a given intersection
         stop_line_positions = self.config['stop_line_positions']
         if self.pose is not None:
-            car_wp_idx, _ = self.waypoints_wrapper.get_closest_waypoint_to([self.pose.pose.position.x, self.pose.pose.position.y])
+            car_wp_idx, _ = self.skeletal_waypoints_wrapper.get_closest_waypoint_to([self.pose.pose.position.x, self.pose.pose.position.y])
 
             # Find the closest visible traffic light if one exists
             # Assume the closest light is at teh end of the waypoint list and iterate until we find the actual closest one
             # We do this, instead of using a KDTree, because there would likely be much fewer lights than waypoints,
             # so to build a KDTree out of the lights first would be a waste of time, given we could just iterate quickly over the lights
-            closest_step_gap = len(self.waypoints.waypoints)
+            closest_step_gap = len(self.skeletal_waypoints.waypoints)
             for i, light in enumerate(self.lights):
                 # Get stop line waypoint index:
                 line = stop_line_positions[i]
 
                 # Find waypoint closest to the stop line:
-                tmp_line_wp_idx, _ = self.waypoints_wrapper.get_closest_waypoint_to([line[0], line[1]])
+                tmp_line_wp_idx, _ = self.skeletal_waypoints_wrapper.get_closest_waypoint_to([line[0], line[1]])
 
                 # Check how many steps away the waypoint nearest to the line is, compared to the waypoint closest to the car
                 step_gap = tmp_line_wp_idx - car_wp_idx
