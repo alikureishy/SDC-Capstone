@@ -113,14 +113,17 @@ class TLDetector(object):
             int: ID of traffic light color (specified in styx_msgs/TrafficLight)
 
         """
-        if(not self.has_image):
-            self.prev_light_loc = None
-            return False
 
-        cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "bgr8")
+        return light.state
 
-        #Get classification
-        return self.light_classifier.get_classification(cv_image)
+        # if(not self.has_image):
+        #     self.prev_light_loc = None
+        #     return False
+        #
+        # cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "bgr8")
+        #
+        # #Get classification
+        # return self.light_classifier.get_classification(cv_image)
 
     def process_traffic_lights(self):
         """Finds closest visible traffic light, if one exists, and determines its
@@ -131,19 +134,41 @@ class TLDetector(object):
             int: ID of traffic light color (specified in styx_msgs/TrafficLight)
 
         """
-        light = None
+        closest_light = None
+        line_wp_idx = None
 
-        # List of positions that correspond to the line to stop in front of for a given intersection
+        # List of positions that correspond to the line to stop in front of, for a given intersection
         stop_line_positions = self.config['stop_line_positions']
-        if(self.pose):
-            car_position = self.get_closest_waypoint(self.pose.pose)
+        if self.pose is not None:
+            car_wp_idx = self.get_closest_waypoint([self.pose.pose.position.x, self.pose.pose.position.y])
 
-        #TODO find the closest visible traffic light (if one exists)
+            # Find the closest visible traffic light if one exists
+            # Assume the closest light is at teh end of the waypoint list and iterate until we find the actual closest one
+            # We do this, instead of using a KDTree, because there would likely be much fewer lights than waypoints,
+            # so to build a KDTree out of the lights first would be a waste of time, given we could just iterate quickly over the lights
+            closest_step_gap = len(self.waypoints.waypoints)
+            for i, light in enumerate(self.lights):
+                # Get stop line waypoint index:
+                line = stop_line_positions[i]
 
-        if light:
-            state = self.get_light_state(light)
-            return light_wp, state
-        self.waypoints = None
+                # Find waypoint closest to the stop line:
+                tmp_line_wp_idx = self.get_closest_waypoint([line[0], line[1]])
+
+                # Check how many steps away the waypoint nearest to the line is, compared to the waypoint closest to the car
+                step_gap = tmp_line_wp_idx - car_wp_idx
+
+                # If the line is ahead of the car the step_gap will be positive
+                # If the step gap is smaller than the closest step gap, we've found something closer
+                if step_gap >= 0 and step_gap < closest_step_gap:
+                    # ... and we update our knowledge of the closest light and the waypoint closest to its stopline
+                    closest_step_gap = step_gap
+                    closest_light = light
+                    line_wp_idx = tmp_line_wp_idx
+
+        if closest_light:
+            state = self.get_light_state(closest_light)
+            return line_wp_idx, state
+
         return -1, TrafficLight.UNKNOWN
 
 if __name__ == '__main__':
