@@ -47,10 +47,23 @@ git clone https://github.com/udacity/CarND-Capstone.git
 cd CarND-Capstone
 pip install -r requirements.txt
 ```
+If the above steps produce errors with finding the requisite libraries, try running through the specific conda-forge channel:
+```
+conda install -c conda-forge scipy numpy eventlet ....
+```
+
 3. Make and run styx
 ```bash
 cd ros
 catkin_make
+```
+This should build the ROS package tree for this project. If there are errors, then some solutions are below:
+```
+conda install -c dbanas empy
+```
+
+Once all issues (if any) are resolved, proceed to launching ROS:
+```
 source devel/setup.sh
 roslaunch launch/styx.launch
 ```
