@@ -49,7 +49,7 @@ class Bridge(object):
             '/vehicle/steering_cmd': self.callback_steering,
             '/vehicle/throttle_cmd': self.callback_throttle,
             '/vehicle/brake_cmd': self.callback_brake,
-        '/final_waypoints': self.callback_path
+            '/final_waypoints': self.callback_path
         }
 
         self.subscribers = [rospy.Subscriber(e.topic, TYPE[e.type], self.callbacks[e.topic])
@@ -99,7 +99,7 @@ class Bridge(object):
 
     def create_steer(self, val):
         st = SteeringReport()
-        st.steering_wheel_angle_cmd = val * math.pi/180.
+        st.steering_wheel_angle = val * math.pi/180.
         st.enabled = True
         st.speed = self.vel
         return st
